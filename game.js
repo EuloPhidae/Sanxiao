@@ -20,25 +20,215 @@ let score = 0;
 let targetScore = 1000;
 let timeLeft = 60;
 let level = 1;
-let state = 'menu';
+let totalTime = 0;
+let state = 'loading';
+let fromPlaying = false;
+let lastInteractionTime = 0;
+let idleRotation = 0;
+let buttonAnimations = [];
+let gemCollection = [];
+let gemHues = [];
+const TOTAL_GEMS = 9;
+
+for (let i = 0; i < TOTAL_GEMS; i++) {
+  gemCollection.push({ id: i, collected: false });
+  gemHues.push(Math.random() * 360);
+}
 let isAnimating = false;
 let animations = [];
+let selectedAnimation = null;
+let leaderboard = [];
+
+function getLeaderboard() {
+  return leaderboard.sort((a, b) => a.time - b.time);
+}
+
+function saveScore(time) {
+  leaderboard.push({ time: time });
+  if (leaderboard.length > 10) {
+    leaderboard = getLeaderboard().slice(0, 10);
+  }
+  try {
+    wx.setStorageSync('sushi_leaderboard', leaderboard);
+  } catch (e) {}
+}
+
+function loadLeaderboard() {
+  try {
+    const data = wx.getStorageSync('sushi_leaderboard');
+    if (data) {
+      leaderboard = data;
+    }
+  } catch (e) {}
+}
+
+function loadGemCollection() {
+  try {
+    const data = wx.getStorageSync('sushi_gemCollection');
+    if (data && data.length === TOTAL_GEMS) {
+      gemCollection = data;
+    }
+  } catch (e) {}
+}
+
+function startSelectedAnimation(row, col) {
+  selectedAnimation = {
+    row: row,
+    col: col,
+    time: 0,
+    duration: 2000
+  };
+}
+
+function clearSelection() {
+  if (selectedTile && board[selectedTile.row] && board[selectedTile.row][selectedTile.col]) {
+    board[selectedTile.row][selectedTile.col].selected = false;
+  }
+  selectedTile = null;
+  selectedAnimation = null;
+}
 let gameInterval = null;
+let hintAnimation = null;
+
+const buttons = [
+  { id: 'hint', label: '提示', x: 0, y: 0, width: 80, height: 40 },
+  { id: 'shuffle', label: '乱序', x: 0, y: 0, width: 80, height: 40 },
+  { id: 'book', label: '图鉴', x: 0, y: 0, width: 80, height: 40 }
+];
+let imageCache = {};
+let loadedCount = 0;
+let totalToLoad = 0;
+let audioCache = {};
+let bgmManager = null;
+let lastBubblePopTime = 0;
+
+function preloadAudio() {
+  audioCache['bubblepop'] = 'audio/linhmitto-bubblepop-254773.mp3';
+  const audio = wx.createInnerAudioContext();
+  audio.src = audioCache['bubblepop'];
+  audio.onPlay(() => {});
+  audio.onError((err) => {
+    console.error('Failed to load audio:', err);
+  });
+  
+  bgmManager = wx.createInnerAudioContext();
+  bgmManager.src = 'audio/bgm.mp3';
+  bgmManager.loop = true;
+  bgmManager.play();
+}
+
+function playBubblePop() {
+  const now = Date.now();
+  if (now - lastBubblePopTime < 300) {
+    return;
+  }
+  lastBubblePopTime = now;
+  
+  const audio = wx.createInnerAudioContext();
+  audio.src = 'audio/linhmitto-bubblepop-254773.mp3';
+  audio.play();
+}
+
+function preloadImages() {
+  const images = [];
+  for (let i = 0; i < 9; i++) {
+    images.push(`images/shousi0${i}_256.png`);
+    images.push(`images/shousi0${i}_normal.png`);
+  }
+  images.push('images/bg.jpg');
+  images.push('images/nextlevel.png');
+  images.push('images/plante.png');
+  images.push('images/Button_002.png');
+  images.push('images/Button_003.png');
+  images.push('images/Button_128.png');
+  images.push('images/Fengmian.png');
+  
+  totalToLoad = images.length;
+  loadedCount = 0;
+  
+  images.forEach(src => {
+    const img = wx.createImage();
+    img.onload = function() {
+      imageCache[src] = img;
+      loadedCount++;
+      if (loadedCount >= totalToLoad) {
+        onAssetsLoaded();
+      }
+    };
+    img.onerror = function(err) {
+      console.error('Failed to load image:', src, err);
+      loadedCount++;
+      if (loadedCount >= totalToLoad) {
+        onAssetsLoaded();
+      }
+    };
+    img.src = src;
+  });
+}
+
+function onAssetsLoaded() {
+  preloadAudio();
+  state = 'menu';
+}
+
+function getGemImageSrc(type) {
+  return `images/shousi0${type}_256.png`;
+}
 
 const levels = [
-  { target: 1000, time: 60, gems: 5 },
-  { target: 2000, time: 55, gems: 5 },
-  { target: 3000, time: 50, gems: 6 },
-  { target: 4000, time: 50, gems: 6 },
-  { target: 5000, time: 45, gems: 7 },
-  { target: 6000, time: 45, gems: 7 },
-  { target: 8000, time: 40, gems: 7 },
-  { target: 10000, time: 40, gems: 7 },
-  { target: 12000, time: 35, gems: 7 },
-  { target: 15000, time: 30, gems: 7 },
+  { target: 500, time: 60 },
+  { target: 700, time: 60 },
+  { target: 900, time: 60 },
+  { target: 1200, time: 55 },
+  { target: 1500, time: 55 },
+  { target: 1800, time: 55 },
+  { target: 2200, time: 50 },
+  { target: 2600, time: 50 },
+  { target: 3000, time: 50 },
+  { target: 3500, time: 45 },
+  { target: 4000, time: 45 },
+  { target: 4500, time: 45 },
+  { target: 5100, time: 40 },
+  { target: 5700, time: 40 },
+  { target: 6300, time: 40 },
+  { target: 7000, time: 38 },
+  { target: 7700, time: 38 },
+  { target: 8400, time: 38 },
+  { target: 9200, time: 35 },
+  { target: 10000, time: 35 },
+  { target: 10800, time: 35 },
+  { target: 11700, time: 32 },
+  { target: 12600, time: 32 },
+  { target: 13500, time: 32 },
+  { target: 14500, time: 30 },
+  { target: 15500, time: 30 },
+  { target: 16500, time: 28 },
+  { target: 18000, time: 28 },
+  { target: 19500, time: 25 },
+  { target: 22000, time: 25 },
 ];
 
 function initGame() {
+  isAnimating = false;
+  selectedTile = null;
+  selectedAnimation = null;
+  hintAnimation = null;
+  fromPlaying = false;
+  
+  if (board) {
+    for (let row = 0; row < GRID_ROWS; row++) {
+      if (!board[row]) continue;
+      for (let col = 0; col < GRID_COLS; col++) {
+        if (board[row][col]) {
+          board[row][col].selected = false;
+          board[row][col].matched = false;
+          board[row][col].matchAnimTime = 0;
+          board[row][col].scale = 1;
+        }
+      }
+    }
+  }
+  
   const levelConfig = levels[Math.min(level - 1, levels.length - 1)];
   targetScore = levelConfig.target;
   timeLeft = levelConfig.time;
@@ -50,8 +240,9 @@ function initGame() {
 function startTimer() {
   if (gameInterval) clearInterval(gameInterval);
   gameInterval = setInterval(() => {
-    if (state === 'playing' && !isAnimating) {
+    if (state === 'playing') {
       timeLeft--;
+      totalTime++;
       if (timeLeft <= 0) {
         if (score >= targetScore) {
           levelComplete();
@@ -64,13 +255,15 @@ function startTimer() {
 }
 
 function createBoard() {
+  const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+  
   board = [];
   for (let row = 0; row < GRID_ROWS; row++) {
     board[row] = [];
     for (let col = 0; col < GRID_COLS; col++) {
       let type;
       do {
-        type = Math.floor(Math.random() * GEM_TYPES);
+        type = Math.floor(Math.random() * gemTypesForLevel);
       } while (wouldMatch(row, col, type));
       board[row][col] = createTile(row, col, type, SPECIAL_NONE);
     }
@@ -87,7 +280,10 @@ function createTile(row, col, type, special) {
     targetX: col * tileSize, 
     targetY: row * tileSize, 
     scale: 1,
-    alpha: 1
+    alpha: 1,
+    matched: false,
+    selected: false,
+    matchAnimTime: 0
   };
 }
 
@@ -108,20 +304,152 @@ function getTileAt(x, y) {
 }
 
 function handleTap(x, y) {
+  if (state === 'loading') return;
+  
+  if (state === 'playing') {
+    lastInteractionTime = Date.now();
+    idleRotation = 0;
+  }
+  
   if (state === 'menu') {
+    const btnImg = imageCache['images/Button_002.png'];
+    const btnScale = 1;
+    const btnY = gameHeight * 0.3 + 30;
+    
+    if (btnImg && btnImg.width > 0) {
+      const btnWidth = btnImg.width * btnScale;
+      const btnHeight = btnImg.height * btnScale;
+      
+      const startBtnX = gameWidth / 2 - 80 - btnWidth / 2;
+      if (x >= startBtnX && x <= startBtnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+        buttonAnimations.push({ index: 'start', progress: 1 });
+        state = 'playing';
+        initGame();
+        return;
+      }
+      
+      const bookBtnX = gameWidth / 2 + 80 - btnWidth / 2;
+      if (x >= bookBtnX && x <= bookBtnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+        buttonAnimations.push({ index: 'book', progress: 1 });
+        fromPlaying = false;
+        state = 'collection';
+        return;
+      }
+    } else {
+      const collectionBtnY = gameHeight * 0.65;
+      if (y > collectionBtnY - 15 && y < collectionBtnY + 15) {
+        fromPlaying = false;
+        state = 'collection';
+        return;
+      }
+    }
+    
     state = 'playing';
     initGame();
     return;
   }
   
-  if (state === 'gameover' || state === 'levelComplete') {
-    if (state === 'gameover') {
-      level = 1;
-      score = 0;
+  if (state === 'collection') {
+    const btnImg = imageCache['images/Button_002.png'];
+    const backBtnY = gameHeight - 200;
+    
+    if (btnImg && btnImg.width > 0) {
+      const backBtnWidth = btnImg.width;
+      const backBtnHeight = btnImg.height;
+      const backBtnX = gameWidth / 2 - backBtnWidth / 2;
+      
+      if (x >= backBtnX && x <= backBtnX + backBtnWidth && y >= backBtnY && y <= backBtnY + backBtnHeight) {
+        if (fromPlaying) {
+          state = 'playing';
+        } else {
+          state = 'menu';
+        }
+        return;
+      }
+    } else {
+      const backBtnWidth = 120;
+      const backBtnHeight = 40;
+      const backBtnX = gameWidth / 2 - backBtnWidth / 2;
+      
+      if (x >= backBtnX && x <= backBtnX + backBtnWidth && y >= backBtnY && y <= backBtnY + backBtnHeight) {
+        if (fromPlaying) {
+          state = 'playing';
+        } else {
+          state = 'menu';
+        }
+        return;
+      }
     }
-    state = 'playing';
-    initGame();
+    
+    const cols = 3;
+    const cellWidth = gameWidth / cols;
+    const cellHeight = 120;
+    const startY = 130;
+    const imgSize = 70;
+    
+    for (let i = 0; i < TOTAL_GEMS; i++) {
+      if (!gemCollection[i].collected) continue;
+      
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const gx = col * cellWidth + cellWidth / 2;
+      const gy = startY + row * cellHeight + cellHeight / 2;
+      
+      const dist = Math.sqrt((x - gx) ** 2 + (y - gy) ** 2);
+      if (dist <= imgSize / 2) {
+        collectionAnimations.push({
+          index: i,
+          time: 300,
+          x: gx,
+          y: gy
+        });
+        playBubblePop();
+        return;
+      }
+    }
+    
     return;
+  }
+  
+  if (state === 'gameover' || state === 'levelComplete' || state === 'gameComplete') {
+    const btnImg = imageCache['images/Button_002.png'];
+    
+    let btnWidth, btnHeight;
+    if (btnImg && btnImg.width > 0) {
+      btnWidth = btnImg.width;
+      btnHeight = btnImg.height;
+    } else {
+      btnWidth = 200;
+      btnHeight = 60;
+    }
+    const btnX = gameWidth / 2 - btnWidth / 2;
+    let btnY;
+    if (state === 'gameComplete') {
+      btnY = gameHeight * 0.85 - btnHeight / 2;
+    } else {
+      btnY = gameHeight * 0.65 - btnHeight / 2;
+    }
+    
+    if (x >= btnX && x <= btnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+      if (state === 'gameover') {
+        level = 1;
+        score = 0;
+      } else if (state === 'gameComplete') {
+        level = 1;
+        score = 0;
+        totalTime = 0;
+      }
+      state = 'playing';
+      initGame();
+    }
+    return;
+  }
+  
+  for (const btn of buttons) {
+    if (x >= btn.x && x <= btn.x + btn.width && y >= btn.y && y <= btn.y + btn.height) {
+      handleButtonClick(btn.id);
+      return;
+    }
   }
   
   if (state !== 'playing' || isAnimating) return;
@@ -131,6 +459,12 @@ function handleTap(x, y) {
   
   if (!selectedTile) {
     selectedTile = tile;
+    if (board[tile.row] && board[tile.row][tile.col]) {
+      board[tile.row][tile.col].selected = true;
+    }
+    startSelectedAnimation(tile.row, tile.col);
+  } else if (tile.row === selectedTile.row && tile.col === selectedTile.col) {
+    clearSelection();
   } else {
     const dRow = Math.abs(tile.row - selectedTile.row);
     const dCol = Math.abs(tile.col - selectedTile.col);
@@ -138,7 +472,7 @@ function handleTap(x, y) {
     if ((dRow === 1 && dCol === 0) || (dRow === 0 && dCol === 1)) {
       swapTiles(selectedTile, tile);
     }
-    selectedTile = null;
+    clearSelection();
   }
 }
 
@@ -282,63 +616,57 @@ function determineMatchType(hMatch, vMatch) {
 
 function processMatches(matches) {
   let points = 0;
-  const specialTiles = [];
-  
   matches.forEach(m => {
     const tile = board[m.row][m.col];
     points += 10;
     
-    if (tile.special === SPECIAL_HORIZONTAL || tile.special === SPECIAL_VERTICAL) {
-      points += 20;
-      if (tile.special === SPECIAL_HORIZONTAL) {
-        for (let c = 0; c < GRID_COLS; c++) {
-          if (board[m.row][c].type >= 0) {
-            matches.push({ row: m.row, col: c });
-            points += 5;
-          }
-        }
-      } else {
-        for (let r = 0; r < GRID_ROWS; r++) {
-          if (board[r][m.col].type >= 0) {
-            matches.push({ row: r, col: m.col });
-            points += 5;
-          }
-        }
-      }
+    if (tile.type >= 0 && tile.type < gemCollection.length) {
+      gemCollection[tile.type].collected = true;
+      try {
+        wx.setStorageSync('sushi_gemCollection', gemCollection);
+      } catch (e) {}
     }
     
-    if (tile.special === SPECIAL_BOMB) {
-      points += 30;
-      for (let dr = -1; dr <= 1; dr++) {
-        for (let dc = -1; dc <= 1; dc++) {
-          const r = m.row + dr;
-          const c = m.col + dc;
-          if (r >= 0 && r < GRID_ROWS && c >= 0 && c < GRID_COLS && board[r][c].type >= 0) {
-            matches.push({ row: r, col: c });
-            points += 5;
-          }
-        }
-      }
-    }
-    
-    if (tile.special === SPECIAL_RAINBOW) {
-      points += 50;
-    }
-    
-    if (m.special !== SPECIAL_NONE && !specialTiles.find(t => t.row === m.row && t.col === m.col)) {
-      specialTiles.push({ row: m.row, col: m.col, special: m.special });
-    }
-    
-    tile.type = -1;
+    tile.matched = true;
+    tile.matchAnimTime = 300;
+    playBubblePop();
   });
   
-  if (specialTiles.length > 0) {
-    const center = matches[0];
-    if (center) {
-      const special = specialTiles[0].special;
-      board[center.row][center.col] = createTile(center.row, center.col, board[center.row][center.col].type >= 0 ? board[center.row][center.col].type : 0, special);
-    }
+  const hasSpecialMatch = matches.some(m => board[m.row][m.col] && (board[m.row][m.col].type === 0 || board[m.row][m.col].type === 1 || board[m.row][m.col].type === 2 || board[m.row][m.col].type === 3));
+  
+  if (hasSpecialMatch) {
+    setTimeout(() => {
+      matches.forEach(m => {
+        const tile = board[m.row][m.col];
+        if (tile) {
+          tile.matchAnimTime = 0;
+          tile.scale = 1;
+          tile.type = -1;
+        }
+      });
+      
+      score += points;
+      
+      if (score >= targetScore && state === 'playing') {
+        setTimeout(() => { levelComplete(); }, 500);
+        return;
+      }
+      
+      setTimeout(() => {
+        dropTiles();
+      }, 200);
+    }, 500);
+    return;
   }
+  
+  matches.forEach(m => {
+    const tile = board[m.row][m.col];
+    if (tile) {
+      tile.matchAnimTime = 0;
+      tile.scale = 1;
+      tile.type = -1;
+    }
+  });
   
   score += points;
   
@@ -369,7 +697,8 @@ function dropTiles() {
     }
     
     for (let row = emptyRow; row >= 0; row--) {
-      board[row][col] = createTile(row, col, Math.floor(Math.random() * GEM_TYPES), SPECIAL_NONE);
+      const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+      board[row][col] = createTile(row, col, Math.floor(Math.random() * gemTypesForLevel), SPECIAL_NONE);
       board[row][col].y = (row - emptyRow - 1) * tileSize - tileSize;
       board[row][col].targetY = row * tileSize;
     }
@@ -386,9 +715,19 @@ function dropTiles() {
 }
 
 function levelComplete() {
-  state = 'levelComplete';
   if (gameInterval) clearInterval(gameInterval);
-  level++;
+  
+  const winAudio = wx.createInnerAudioContext();
+  winAudio.src = 'audio/win.mp3';
+  winAudio.play();
+  
+  if (level >= levels.length) {
+    state = 'gameComplete';
+    saveScore(totalTime);
+  } else {
+    state = 'levelComplete';
+    level++;
+  }
 }
 
 function gameOver() {
@@ -402,6 +741,25 @@ function update(dt) {
     return a.time > 0;
   });
   
+  collectionAnimations = collectionAnimations.filter(a => {
+    a.time -= dt;
+    return a.time > 0;
+  });
+  
+  if (selectedAnimation) {
+    selectedAnimation.time += dt;
+    if (selectedAnimation.time >= selectedAnimation.duration) {
+      clearSelection();
+    }
+  }
+  
+  if (hintAnimation) {
+    hintAnimation.time += dt;
+    if (hintAnimation.time >= hintAnimation.duration) {
+      hintAnimation = null;
+    }
+  }
+  
   if (!board || board.length === 0) return;
   
   for (let row = 0; row < GRID_ROWS; row++) {
@@ -411,38 +769,159 @@ function update(dt) {
       const tile = board[row][col];
       tile.x += (tile.targetX - tile.x) * 0.15;
       tile.y += (tile.targetY - tile.y) * 0.15;
+      
+      if (tile.matchAnimTime > 0) {
+        tile.matchAnimTime -= dt;
+        const progress = 1 - (tile.matchAnimTime / 300);
+        tile.scale = 1 + Math.sin(progress * Math.PI) * 0.3;
+      }
     }
   }
 }
 
 function render() {
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0, 0, gameWidth, gameHeight);
+  if (state === 'menu') {
+    idleRotation += 0.02;
+  }
+  
+  if (state === 'loading') {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    
+    ctx.fillStyle = '#4ECDC4';
+    ctx.font = 'bold 36px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Loading...', gameWidth / 2, gameHeight / 2 - 20);
+    
+    const progress = totalToLoad > 0 ? loadedCount / totalToLoad : 0;
+    ctx.fillStyle = '#333333';
+    ctx.fillRect(gameWidth / 2 - 100, gameHeight / 2 + 20, 200, 20);
+    ctx.fillStyle = '#4ECDC4';
+    ctx.fillRect(gameWidth / 2 - 100, gameHeight / 2 + 20, 200 * progress, 20);
+    return;
+  }
+  
+  const bgImg = imageCache['images/bg.jpg'];
+  if (bgImg && bgImg.width > 0) {
+    ctx.drawImage(bgImg, 0, 0, gameWidth, gameHeight);
+  } else {
+    ctx.fillStyle = '#1a1a2e';
+    ctx.fillRect(0, 0, gameWidth, gameHeight);
+  }
   
   if (state === 'menu') {
-    ctx.fillStyle = '#FFD700';
-    ctx.font = 'bold 48px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('宝石消除', gameWidth / 2, gameHeight * 0.3);
+    ctx.fillStyle = '#e0eed7';
+    ctx.fillRect(0, 0, gameWidth, gameHeight);
     
-    ctx.fillStyle = '#FFFFFF';
-    ctx.font = '24px Arial';
-    ctx.fillText('点击开始游戏', gameWidth / 2, gameHeight * 0.5);
+    const fengmianImg = imageCache['images/Fengmian.png'];
+    if (fengmianImg && fengmianImg.width > 0) {
+      const imgAspect = fengmianImg.width / fengmianImg.height;
+      const screenAspect = gameWidth / gameHeight;
+      let drawWidth, drawHeight;
+      if (imgAspect > screenAspect) {
+        drawWidth = gameWidth;
+        drawHeight = gameWidth / imgAspect;
+      } else {
+        drawHeight = gameHeight;
+        drawWidth = gameHeight * imgAspect;
+      }
+      const drawX = (gameWidth - drawWidth) / 2;
+      const drawY = gameHeight - drawHeight;
+      ctx.drawImage(fengmianImg, drawX, drawY, drawWidth, drawHeight);
+    }
+    
+    const btnImg = imageCache['images/Button_002.png'];
+    const btnOverlayImg = imageCache['images/Button_003.png'];
+    const startBtnY = gameHeight * 0.3 + 30;
+    const btnScale = 1;
+    
+    const startBtnAnim = buttonAnimations.find(a => a.index === 'start');
+    const startScale = startBtnAnim ? 1 + Math.sin(startBtnAnim.progress * Math.PI) * 0.15 : 1;
+    if (startBtnAnim) {
+      startBtnAnim.progress -= 0.08;
+      if (startBtnAnim.progress <= 0) {
+        buttonAnimations = buttonAnimations.filter(a => a.index !== 'start');
+      }
+    }
+    
+    if (btnImg && btnImg.width > 0) {
+      const btnWidth = btnImg.width * btnScale * startScale;
+      const btnHeight = btnImg.height * btnScale * startScale;
+      const btnX = gameWidth / 2 - btnWidth / 2 - 80;
+      
+      ctx.save();
+      ctx.filter = 'saturate(0) brightness(1.4)';
+      ctx.drawImage(btnImg, btnX, startBtnY, btnWidth, btnHeight);
+      ctx.restore();
+      
+      if (btnOverlayImg && btnOverlayImg.width > 0) {
+        ctx.save();
+        ctx.translate(gameWidth / 2 - 80, startBtnY + btnHeight / 2);
+        ctx.rotate(idleRotation);
+        ctx.drawImage(btnOverlayImg, -btnWidth / 2, -btnHeight / 2, btnWidth, btnHeight);
+        ctx.restore();
+      }
+      
+      ctx.font = '20px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText('开始', gameWidth / 2 - 80, startBtnY + btnHeight / 2 + 7);
+    }
+    
+    const bookBtnY = startBtnY;
+    const bookBtnAnim = buttonAnimations.find(a => a.index === 'book');
+    const bookScale = bookBtnAnim ? 1 + Math.sin(bookBtnAnim.progress * Math.PI) * 0.15 : 1;
+    if (bookBtnAnim) {
+      bookBtnAnim.progress -= 0.08;
+      if (bookBtnAnim.progress <= 0) {
+        buttonAnimations = buttonAnimations.filter(a => a.index !== 'book');
+      }
+    }
+    
+    if (btnImg && btnImg.width > 0) {
+      const btnWidth = btnImg.width * btnScale * bookScale;
+      const btnHeight = btnImg.height * btnScale * bookScale;
+      const btnX = gameWidth / 2 - btnWidth / 2 + 80;
+      ctx.drawImage(btnImg, btnX, bookBtnY, btnWidth, btnHeight);
+      
+      if (btnOverlayImg && btnOverlayImg.width > 0) {
+        ctx.save();
+        ctx.translate(gameWidth / 2 + 80, bookBtnY + btnHeight / 2);
+        ctx.rotate(idleRotation);
+        ctx.drawImage(btnOverlayImg, -btnWidth / 2, -btnHeight / 2, btnWidth, btnHeight);
+        ctx.restore();
+      }
+      
+      ctx.font = '20px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText('图鉴', gameWidth / 2 + 80, bookBtnY + btnHeight / 2 + 7);
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(gameWidth / 2 - 60, bookBtnY - 20, 120, 40);
+      ctx.font = '20px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText('图鉴', gameWidth / 2, bookBtnY + 6);
+    }
+    return;
+  }
+  
+  if (state === 'collection') {
+    renderCollection();
     return;
   }
   
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.fillRect(0, 0, gameWidth, 50);
+  ctx.fillRect(0, 0, gameWidth, 120);
+  
   ctx.fillStyle = '#FFFFFF';
   ctx.font = '20px Arial';
   ctx.textAlign = 'left';
-  ctx.fillText('分数: ' + score + ' / ' + targetScore, 20, 33);
-  ctx.textAlign = 'right';
-  ctx.fillStyle = timeLeft <= 10 ? '#FF4444' : '#FFFFFF';
-  ctx.fillText('时间: ' + timeLeft, gameWidth - 20, 33);
-  ctx.textAlign = 'left';
+  ctx.fillText('分数: ' + score + ' / ' + targetScore, 20, 50);
   ctx.fillStyle = '#FFD700';
-  ctx.fillText('关卡: ' + level, gameWidth / 2 - 30, 33);
+  ctx.fillText('关卡: ' + level, 20, 80);
+  ctx.fillStyle = timeLeft <= 10 ? '#FF4444' : '#FFFFFF';
+  ctx.fillText('时间: ' + timeLeft, 20, 110);
   
   if (!board || board.length === 0) return;
   
@@ -454,37 +933,49 @@ function render() {
       const tile = board[row][col];
       const x = offsetX + tile.x + tileSize / 2;
       const y = offsetY + tile.y + tileSize / 2;
-      const size = tileSize * 0.75 * tile.scale;
+      const size = tileSize * tile.scale;
       
       ctx.globalAlpha = tile.alpha;
       
-      ctx.fillStyle = COLORS[tile.type];
-      ctx.beginPath();
-      ctx.arc(x, y, size / 2, 0, Math.PI * 2);
-      ctx.fill();
-      
-      if (tile.special === SPECIAL_HORIZONTAL) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(x - size * 0.3, y - 4, size * 0.6, 8);
-      } else if (tile.special === SPECIAL_VERTICAL) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(x - 4, y - size * 0.3, 8, size * 0.6);
-      } else if (tile.special === SPECIAL_BOMB) {
-        ctx.fillStyle = '#FF0000';
+      let imgSrc;
+      if (tile.matched || tile.selected) {
+        imgSrc = `images/shousi0${tile.type}_256.png`;
+      } else {
+        imgSrc = `images/shousi0${tile.type}_normal.png`;
+      }
+      const img = imageCache[imgSrc];
+      if (img && img.width > 0) {
+        ctx.drawImage(img, x - size / 2, y - size / 2, size, size);
+      } else {
+        ctx.fillStyle = COLORS[tile.type];
         ctx.beginPath();
-        ctx.arc(x, y, size * 0.2, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (tile.special === SPECIAL_RAINBOW) {
-        ctx.fillStyle = '#FFFFFF';
-        ctx.beginPath();
-        ctx.arc(x, y, size * 0.25, 0, Math.PI * 2);
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
         ctx.fill();
       }
       
-      if (selectedTile && selectedTile.row === row && selectedTile.col === col) {
-        ctx.strokeStyle = '#FFFFFF';
+      if (selectedAnimation && selectedAnimation.row === row && selectedAnimation.col === col) {
+        const progress = selectedAnimation.time / selectedAnimation.duration;
+        const maxRadius = size * 0.8;
+        const minRadius = size * 0.4;
+        const radius = minRadius + (maxRadius - minRadius) * progress;
+        
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255, 182, 193, ${0.5 * (1 - progress)})`;
         ctx.lineWidth = 3;
         ctx.stroke();
+      }
+      
+      if (hintAnimation) {
+        const isHint1 = hintAnimation.t1.row === row && hintAnimation.t1.col === col;
+        const isHint2 = hintAnimation.t2.row === row && hintAnimation.t2.col === col;
+        if (isHint1 || isHint2) {
+          ctx.strokeStyle = '#FFFF00';
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(x, y, size * 0.6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       }
       
       ctx.globalAlpha = 1;
@@ -516,18 +1007,352 @@ function render() {
     ctx.font = 'bold 48px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('关卡完成!', gameWidth / 2, gameHeight * 0.35);
-    
     ctx.fillStyle = '#FFD700';
     ctx.font = '28px Arial';
     ctx.fillText('分数: ' + score, gameWidth / 2, gameHeight * 0.5);
     
-    ctx.font = '22px Arial';
+    const btnImg = imageCache['images/Button_002.png'];
+    const btnOverlayImg = imageCache['images/Button_003.png'];
+    
+    let btnWidth, btnHeight;
+    if (btnImg && btnImg.width > 0) {
+      btnWidth = btnImg.width;
+      btnHeight = btnImg.height;
+    } else {
+      btnWidth = 200;
+      btnHeight = 60;
+    }
+    const btnX = gameWidth / 2 - btnWidth / 2;
+    const btnY = gameHeight * 0.65 - btnHeight / 2;
+    
+    if (btnImg && btnImg.width > 0) {
+      ctx.drawImage(btnImg, btnX, btnY, btnWidth, btnHeight);
+      
+      if (btnOverlayImg && btnOverlayImg.width > 0) {
+        ctx.save();
+        ctx.translate(gameWidth / 2, btnY + btnHeight / 2);
+        ctx.rotate(idleRotation);
+        ctx.drawImage(btnOverlayImg, -btnWidth / 2, -btnHeight / 2, btnWidth, btnHeight);
+        ctx.restore();
+      }
+      
+      ctx.font = 'bold 24px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText('下一关', gameWidth / 2, btnY + btnHeight / 2 + 8);
+    } else {
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '24px Arial';
+      ctx.fillText('下一关', gameWidth / 2, btnY + btnHeight / 2 + 8);
+    }
+  }
+  
+  if (state === 'gameComplete') {
+    ctx.fillStyle = 'rgba(0,0,0,0.8)';
+    ctx.fillRect(0, 0, gameWidth, gameHeight);
+    
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 56px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('恭喜通关!', gameWidth / 2, gameHeight * 0.25);
+    
+    const minutes = Math.floor(totalTime / 60);
+    const seconds = totalTime % 60;
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText('点击进入下一关', gameWidth / 2, gameHeight * 0.65);
+    ctx.font = '32px Arial';
+    ctx.fillText('总耗时: ' + minutes + '分' + seconds + '秒', gameWidth / 2, gameHeight * 0.4);
+    
+    ctx.fillStyle = '#4ECDC4';
+    ctx.font = 'bold 36px Arial';
+    ctx.fillText('排行榜', gameWidth / 2, gameHeight * 0.52);
+    
+    const leaderboard = getLeaderboard();
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '24px Arial';
+    for (let i = 0; i < Math.min(5, leaderboard.length); i++) {
+      const mins = Math.floor(leaderboard[i].time / 60);
+      const secs = leaderboard[i].time % 60;
+      ctx.fillText((i + 1) + '. ' + mins + '分' + secs + '秒', gameWidth / 2, gameHeight * 0.60 + i * 35);
+    }
+    
+    const btnImg = imageCache['images/Button_002.png'];
+    const btnOverlayImg = imageCache['images/Button_003.png'];
+    
+    let btnWidth, btnHeight;
+    if (btnImg && btnImg.width > 0) {
+      btnWidth = btnImg.width;
+      btnHeight = btnImg.height;
+    } else {
+      btnWidth = 200;
+      btnHeight = 60;
+    }
+    const btnX = gameWidth / 2 - btnWidth / 2;
+    const btnY = gameHeight * 0.85 - btnHeight / 2;
+    
+    if (btnImg && btnImg.width > 0) {
+      ctx.drawImage(btnImg, btnX, btnY, btnWidth, btnHeight);
+      
+      if (btnOverlayImg && btnOverlayImg.width > 0) {
+        ctx.save();
+        ctx.translate(gameWidth / 2, btnY + btnHeight / 2);
+        ctx.rotate(idleRotation);
+        ctx.drawImage(btnOverlayImg, -btnWidth / 2, -btnHeight / 2, btnWidth, btnHeight);
+        ctx.restore();
+      }
+      
+      ctx.font = 'bold 24px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText('再来一局', gameWidth / 2, btnY + btnHeight / 2 + 8);
+    } else {
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(btnX, btnY, btnWidth, btnHeight);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '24px Arial';
+      ctx.fillText('再来一局', gameWidth / 2, btnY + btnHeight / 2 + 8);
+    }
+  }
+  
+  if (state === 'playing') {
+    drawButtons();
+  }
+}
+
+function drawButtons() {
+  const btnY = gameHeight - 128;
+  const bgHeight = 128;
+  
+  const bottomBarImg = imageCache['images/Button_128.png'];
+  if (bottomBarImg && bottomBarImg.width > 0) {
+    const tileWidth = bottomBarImg.width * 0.8;
+    const tileCount = Math.ceil(gameWidth / tileWidth) + 1;
+    for (let i = 0; i < tileCount; i++) {
+      ctx.drawImage(bottomBarImg, i * tileWidth, btnY, tileWidth, bgHeight);
+    }
+  } else {
+    ctx.fillStyle = '#4ECDC4';
+    ctx.fillRect(0, btnY, gameWidth, bgHeight);
+  }
+  
+  const btnSpacing = 20;
+  const totalWidth = buttons.length * 80 + (buttons.length - 1) * btnSpacing;
+  const startX = (gameWidth - totalWidth) / 2;
+  const btnImg = imageCache['images/Button_002.png'];
+  const btnOverlayImg = imageCache['images/Button_003.png'];
+  
+  const now = Date.now();
+  const isIdle = state === 'playing' && (now - lastInteractionTime > 3000);
+  if (isIdle) {
+    idleRotation += 0.02;
+  } else if (state !== 'menu') {
+    idleRotation = 0;
+  }
+  
+  buttons.forEach((btn, i) => {
+    btn.x = startX + i * (80 + btnSpacing);
+    btn.y = btnY + (bgHeight - 40) / 2;
+    
+    const btnAspect = btn.width / btn.height;
+    
+    const btnAnim = buttonAnimations.find(a => a.index === i);
+    let btnScale = 1;
+    if (btnAnim) {
+      btnScale = 1 + Math.sin(btnAnim.progress * Math.PI) * 0.2;
+    }
+    
+    if (btnImg && btnImg.width > 0) {
+      const imgAspect = btnImg.width / btnImg.height;
+      let drawWidth, drawHeight;
+      if (imgAspect > btnAspect) {
+        drawHeight = btn.height;
+        drawWidth = drawHeight * imgAspect;
+      } else {
+        drawWidth = btn.width;
+        drawHeight = drawWidth / imgAspect;
+      }
+      const drawX = btn.x + (btn.width - drawWidth) / 2;
+      const drawY = btn.y + (btn.height - drawHeight) / 2;
+      
+      let filterStr = '';
+      if (i === 0) {
+        filterStr = 'saturate(0) brightness(1.7)';
+      } else if (i === 2) {
+        filterStr = 'saturate(0) brightness(0.61)';
+      }
+      
+      ctx.save();
+      ctx.translate(btn.x + btn.width / 2, btn.y + btn.height / 2);
+      ctx.scale(btnScale, btnScale);
+      ctx.translate(-(btn.x + btn.width / 2), -(btn.y + btn.height / 2));
+      
+      if (filterStr) {
+        ctx.save();
+        ctx.filter = filterStr;
+        ctx.drawImage(btnImg, drawX, drawY, drawWidth, drawHeight);
+        ctx.restore();
+      } else {
+        ctx.drawImage(btnImg, drawX, drawY, drawWidth, drawHeight);
+      }
+      ctx.restore();
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(btn.x, btn.y, btn.width, btn.height);
+    }
+    
+    if (btnOverlayImg && btnOverlayImg.width > 0) {
+      const overlayAspect = btnOverlayImg.width / btnOverlayImg.height;
+      let overlayWidth, overlayHeight;
+      if (overlayAspect > btnAspect) {
+        overlayHeight = btn.height;
+        overlayWidth = overlayHeight * overlayAspect;
+      } else {
+        overlayWidth = btn.width;
+        overlayHeight = overlayWidth / overlayAspect;
+      }
+      
+      const btnAnim = buttonAnimations.find(a => a.index === i);
+      let scale = 1;
+      if (btnAnim) {
+        scale = 1 + Math.sin(btnAnim.progress * Math.PI) * 0.2;
+      }
+      
+      if (btnAnim) {
+        btnAnim.progress -= 0.05;
+        if (btnAnim.progress <= 0) {
+          buttonAnimations = buttonAnimations.filter(a => a.index !== i);
+        }
+      }
+      
+      ctx.save();
+      ctx.translate(btn.x + btn.width / 2, btn.y + btn.height / 2);
+      ctx.scale(scale, scale);
+      ctx.rotate(idleRotation);
+      ctx.drawImage(btnOverlayImg, -overlayWidth / 2, -overlayHeight / 2, overlayWidth, overlayHeight);
+      ctx.restore();
+    }
+    
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 21px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(btn.label, btn.x + btn.width / 2, btn.y + btn.height / 2 + 6);
+  });
+}
+
+function renderCollection() {
+  ctx.fillStyle = '#fae8de';
+  ctx.fillRect(0, 0, gameWidth, gameHeight / 2);
+  ctx.fillStyle = '#def3ca';
+  ctx.fillRect(0, gameHeight / 2, gameWidth, gameHeight / 2);
+  
+  ctx.fillStyle = '#9b8169';
+  ctx.font = 'bold 36px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('寿司图鉴', gameWidth / 2, 70);
+  
+  const collectedCount = gemCollection.filter(g => g.collected).length;
+  ctx.fillStyle = '#888888';
+  ctx.font = '20px Arial';
+  ctx.fillText(`已收集: ${collectedCount} / ${TOTAL_GEMS}`, gameWidth / 2, 110);
+  
+  const cols = 3;
+  const cellWidth = gameWidth / cols;
+  const cellHeight = 120;
+  const startY = 130;
+  const imgSize = 70;
+  
+  for (let i = 0; i < TOTAL_GEMS; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = col * cellWidth + cellWidth / 2;
+    const y = startY + row * cellHeight + cellHeight / 2;
+    
+    if (gemCollection[i].collected) {
+      const imgSrc = getGemImageSrc(i);
+      const img = imageCache[imgSrc];
+      
+      let drawSize = imgSize;
+      for (const anim of collectionAnimations) {
+        if (anim.index === i) {
+          const progress = 1 - (anim.time / 300);
+          drawSize = imgSize * (1 + Math.sin(progress * Math.PI) * 0.2);
+          break;
+        }
+      }
+      
+      const planteImg = imageCache['images/plante.png'];
+      if (planteImg && planteImg.width > 0) {
+        const planteSize = drawSize * 0.6 * 2;
+        const planteY = y + drawSize / 2 - planteSize / 2 - 20;
+        ctx.save();
+        ctx.filter = `hue-rotate(${gemHues[i]}deg)`;
+        ctx.globalAlpha = 0.8;
+        ctx.drawImage(planteImg, x - planteSize / 2, planteY, planteSize, planteSize);
+        ctx.restore();
+      }
+      
+      if (img && img.width > 0) {
+        ctx.drawImage(img, x - drawSize / 2, y - drawSize / 2, drawSize, drawSize);
+      } else {
+        ctx.fillStyle = COLORS[i];
+        ctx.beginPath();
+        ctx.arc(x, y, drawSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = '#333333';
+      ctx.beginPath();
+      ctx.arc(x, y, imgSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.fillStyle = '#666666';
+      ctx.font = '24px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('?', x, y + 8);
+    }
+  }
+  
+  const btnImg = imageCache['images/Button_002.png'];
+  const btnOverlayImg = imageCache['images/Button_003.png'];
+  const backBtnY = gameHeight - 200;
+  
+  if (btnImg && btnImg.width > 0) {
+    const btnWidth = btnImg.width;
+    const btnHeight = btnImg.height;
+    const btnX = gameWidth / 2 - btnWidth / 2;
+    ctx.drawImage(btnImg, btnX, backBtnY);
+    
+    if (btnOverlayImg && btnOverlayImg.width > 0) {
+      ctx.save();
+      ctx.translate(gameWidth / 2, backBtnY + btnHeight / 2);
+      ctx.rotate(idleRotation);
+      ctx.drawImage(btnOverlayImg, -btnWidth / 2, -btnHeight / 2, btnWidth, btnHeight);
+      ctx.restore();
+    }
+    
+    ctx.font = '18px Arial';
+    ctx.fillStyle = '#FFFFFF';
+    ctx.textAlign = 'center';
+    ctx.fillText('返回', gameWidth / 2, backBtnY + btnHeight / 2 + 6);
+  } else {
+    ctx.fillStyle = '#4CAF50';
+    ctx.fillRect(gameWidth / 2 - 60, gameHeight - 50, 120, 40);
+    
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'center';
+    if (fromPlaying) {
+      ctx.fillText('回到游戏', gameWidth / 2, gameHeight - 22);
+    } else {
+      ctx.fillText('返回', gameWidth / 2, gameHeight - 22);
+    }
   }
 }
 
 let lastTime = 0;
+let collectionAnimations = [];
+
 function gameLoop(timestamp) {
   const dt = timestamp - lastTime;
   lastTime = timestamp;
@@ -552,6 +1377,128 @@ ctx.scale(dpr, dpr);
 tileSize = Math.min(gameWidth * 0.15, gameHeight * 0.09);
 offsetX = (gameWidth - tileSize * GRID_COLS) / 2;
 offsetY = (gameHeight - tileSize * GRID_ROWS) / 2 + 20;
+
+preloadImages();
+loadLeaderboard();
+loadGemCollection();
+
+function findHint() {
+  for (let row = 0; row < GRID_ROWS; row++) {
+    if (!board[row]) continue;
+    for (let col = 0; col < GRID_COLS; col++) {
+      if (!board[row][col] || board[row][col].type < 0) continue;
+      
+      if (col < GRID_COLS - 1 && board[row][col + 1] && board[row][col + 1].type >= 0) {
+        const temp = board[row][col].type;
+        board[row][col].type = board[row][col + 1].type;
+        board[row][col + 1].type = temp;
+        
+        if (findAllMatches().length > 0) {
+          board[row][col + 1].type = board[row][col].type;
+          board[row][col].type = temp;
+          return { t1: { row, col }, t2: { row, col: col + 1 } };
+        }
+        
+        board[row][col + 1].type = board[row][col].type;
+        board[row][col].type = temp;
+      }
+      
+      if (row < GRID_ROWS - 1 && board[row + 1] && board[row + 1][col] && board[row + 1][col].type >= 0) {
+        const temp = board[row][col].type;
+        board[row][col].type = board[row + 1][col].type;
+        board[row + 1][col].type = temp;
+        
+        if (findAllMatches().length > 0) {
+          board[row + 1][col].type = board[row][col].type;
+          board[row][col].type = temp;
+          return { t1: { row, col }, t2: { row: row + 1, col } };
+        }
+        
+        board[row + 1][col].type = board[row][col].type;
+        board[row][col].type = temp;
+      }
+    }
+  }
+  return null;
+}
+
+function doHint() {
+  if (isAnimating) return;
+  const hint = findHint();
+  if (hint) {
+    hintAnimation = {
+      t1: hint.t1,
+      t2: hint.t2,
+      time: 0,
+      duration: 2000
+    };
+  }
+}
+
+function doShuffle() {
+  if (isAnimating) return;
+  
+  const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+  
+  for (let row = 0; row < GRID_ROWS; row++) {
+    if (!board[row]) continue;
+    for (let col = 0; col < GRID_COLS; col++) {
+      if (board[row][col] && board[row][col].type >= 0) {
+        board[row][col].type = Math.floor(Math.random() * gemTypesForLevel);
+      }
+    }
+  }
+  
+  isAnimating = true;
+  
+  const matches = findAllMatches();
+  if (matches.length > 0) {
+    processMatches(matches);
+  } else {
+    setTimeout(() => { isAnimating = false; }, 300);
+  }
+}
+
+function doClear() {
+  if (!selectedTile || isAnimating) return;
+  
+  const selectedType = board[selectedTile.row][selectedTile.col].type;
+  if (selectedType < 0) return;
+  
+  const matches = [];
+  for (let row = 0; row < GRID_ROWS; row++) {
+    if (!board[row]) continue;
+    for (let col = 0; col < GRID_COLS; col++) {
+      if (board[row][col] && board[row][col].type === selectedType) {
+        matches.push({ row, col, special: SPECIAL_NONE });
+      }
+    }
+  }
+  
+  if (matches.length >= 3) {
+    isAnimating = true;
+    processMatches(matches);
+    clearSelection();
+  }
+}
+
+function handleButtonClick(btnId) {
+  const btnIndex = buttons.findIndex(b => b.id === btnId);
+  if (btnIndex >= 0) {
+    buttonAnimations.push({ index: btnIndex, progress: 1 });
+  }
+  
+  if (btnId === 'hint') {
+    doHint();
+  } else if (btnId === 'shuffle') {
+    doShuffle();
+  } else if (btnId === 'clear') {
+    doClear();
+  } else if (btnId === 'book') {
+    fromPlaying = state === 'playing';
+    state = 'collection';
+  }
+}
 
 wx.onTouchStart((res) => {
   const touch = res.touches[0];
