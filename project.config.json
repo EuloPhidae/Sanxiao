@@ -16,8 +16,8 @@
     "minifyWXML": true,
     "localPlugins": false,
     "condition": false,
-    "swc": false,
-    "disableSWC": true,
+    "swc": true,
+    "disableSWC": false,
     "babelSetting": {
       "ignore": [],
       "disablePlugins": [],
@@ -28,7 +28,7 @@
   },
   "compileType": "miniprogram",
   "libVersion": "latest",
-  "appid": "wx4a4c2f4c72d666d0",
+  "appid": "wxeb1c1991ea002a4b",
   "projectname": "quickstart",
   "condition": {
     "search": {

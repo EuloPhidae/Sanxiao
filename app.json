@@ -1,9 +1,0 @@
-{
-  "pages": [
-    "game"
-  ],
-  "window": {
-    "navigationBarTitleText": "宝石消除",
-    "navigationStyle": "custom"
-  }
-}

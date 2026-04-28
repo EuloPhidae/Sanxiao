@@ -20,6 +20,7 @@ let score = 0;
 let targetScore = 1000;
 let timeLeft = 60;
 let level = 1;
+let levelHueRotation = 0;
 let totalTime = 0;
 let state = 'loading';
 let fromPlaying = false;
@@ -27,8 +28,11 @@ let lastInteractionTime = 0;
 let idleRotation = 0;
 let buttonAnimations = [];
 let gemCollection = [];
+let touchStartTile = null;
+let touchStartPos = null;
+const SWIPE_THRESHOLD = 30;
 let gemHues = [];
-const TOTAL_GEMS = 9;
+const TOTAL_GEMS = 11;
 
 for (let i = 0; i < TOTAL_GEMS; i++) {
   gemCollection.push({ id: i, collected: false });
@@ -36,11 +40,36 @@ for (let i = 0; i < TOTAL_GEMS; i++) {
 }
 let isAnimating = false;
 let animations = [];
+let tweens = [];
 let selectedAnimation = null;
 let leaderboard = [];
+let levelLeaderboard = [];
 
 function getLeaderboard() {
   return leaderboard.sort((a, b) => a.time - b.time);
+}
+
+function getLevelLeaderboard() {
+  return levelLeaderboard.sort((a, b) => b.level - a.level || a.time - b.time);
+}
+
+function saveLevelScore(currentLevel, time) {
+  levelLeaderboard.push({ level: currentLevel, time: time });
+  if (levelLeaderboard.length > 10) {
+    levelLeaderboard = getLevelLeaderboard().slice(0, 10);
+  }
+  try {
+    wx.setStorageSync('sushi_levelLeaderboard', levelLeaderboard);
+  } catch (e) {}
+}
+
+function loadLevelLeaderboard() {
+  try {
+    const data = wx.getStorageSync('sushi_levelLeaderboard');
+    if (data) {
+      levelLeaderboard = data;
+    }
+  } catch (e) {}
 }
 
 function saveScore(time) {
@@ -69,6 +98,108 @@ function loadGemCollection() {
       gemCollection = data;
     }
   } catch (e) {}
+}
+
+const gsap = {
+  to(target, props) {
+    const duration = props.duration || 0.3;
+    const ease = props.ease || 'power2out';
+    const onComplete = props.onComplete;
+    
+    const startValues = {};
+    const endValues = {};
+    
+    for (const key in props) {
+      if (key === 'duration' || key === 'ease' || key === 'onComplete') continue;
+      startValues[key] = target[key];
+      endValues[key] = props[key];
+    }
+    
+    const startTime = Date.now();
+    
+    const tween = {
+      target,
+      startValues,
+      endValues,
+      duration: duration * 1000,
+      startTime,
+      ease,
+      onComplete,
+      active: true
+    };
+    
+    tweens.push(tween);
+    return tween;
+  },
+  
+  update() {
+    const now = Date.now();
+    tweens = tweens.filter(tween => {
+      if (!tween.active) return false;
+      
+      const elapsed = now - tween.startTime;
+      const progress = Math.min(elapsed / tween.duration, 1);
+      const easedProgress = easeWithGSAP(progress, tween.ease);
+      
+      for (const key in tween.startValues) {
+        const start = tween.startValues[key];
+        const end = tween.endValues[key];
+        tween.target[key] = start + (end - start) * easedProgress;
+      }
+      
+      if (progress >= 1) {
+        if (tween.onComplete) {
+          tween.onComplete();
+        }
+        return false;
+      }
+      
+      return true;
+    });
+  },
+  
+  kill(tween) {
+    if (tween) {
+      tween.active = false;
+    }
+  },
+  
+  remove(tween) {
+    tween.active = false;
+  }
+};
+
+function easeWithGSAP(t, ease) {
+  switch (ease) {
+    case 'power1out': return 1 - Math.pow(1 - t, 1);
+    case 'power2out': return 1 - Math.pow(1 - t, 2);
+    case 'power3out': return 1 - Math.pow(1 - t, 3);
+    case 'power4out': return 1 - Math.pow(1 - t, 4);
+    case 'elasticout': return Math.sin(-13 * Math.PI / 2 * (t + 1)) * Math.pow(2, -10 * t) + 1;
+    case 'bounceout': return bounceOut(t);
+    case 'backout': return backOut(t);
+    case 'none': return t;
+    default: return 1 - Math.pow(1 - t, 2);
+  }
+}
+
+function bounceOut(t) {
+  if (t < 1 / 2.75) {
+    return 7.5625 * t * t;
+  } else if (t < 2 / 2.75) {
+    t -= 1.5 / 2.75;
+    return 7.5625 * t * t + 0.75;
+  } else if (t < 2.5 / 2.75) {
+    t -= 2.25 / 2.75;
+    return 7.5625 * t * t + 0.9375;
+  } else {
+    t -= 2.625 / 2.75;
+    return 7.5625 * t * t + 0.984375;
+  }
+}
+
+function backOut(t) {
+  return 1 + 2.70158 * Math.pow(t - 1, 3) + 1.70158 * Math.pow(t - 1, 2);
 }
 
 function startSelectedAnimation(row, col) {
@@ -131,13 +262,12 @@ function playBubblePop() {
 
 function preloadImages() {
   const images = [];
-  for (let i = 0; i < 9; i++) {
-    images.push(`images/shousi0${i}_256.png`);
-    images.push(`images/shousi0${i}_normal.png`);
+  for (let i = 0; i < TOTAL_GEMS; i++) {
+    const numStr = i < 10 ? `0${i}` : `${i}`;
+    images.push(`images/shousi${numStr}_256.png`);
+    images.push(`images/shousi${numStr}_normal.png`);
   }
   images.push('images/bg.jpg');
-  images.push('images/nextlevel.png');
-  images.push('images/plante.png');
   images.push('images/Button_002.png');
   images.push('images/Button_003.png');
   images.push('images/Button_128.png');
@@ -172,40 +302,50 @@ function onAssetsLoaded() {
 }
 
 function getGemImageSrc(type) {
-  return `images/shousi0${type}_256.png`;
+  if (type < 10) {
+    return `images/shousi0${type}_256.png`;
+  } else {
+    return `images/shousi${type}_256.png`;
+  }
 }
 
 const levels = [
-  { target: 500, time: 60 },
-  { target: 700, time: 60 },
-  { target: 900, time: 60 },
-  { target: 1200, time: 55 },
-  { target: 1500, time: 55 },
-  { target: 1800, time: 55 },
-  { target: 2200, time: 50 },
-  { target: 2600, time: 50 },
-  { target: 3000, time: 50 },
-  { target: 3500, time: 45 },
-  { target: 4000, time: 45 },
-  { target: 4500, time: 45 },
-  { target: 5100, time: 40 },
+  { target: 600, time: 60 },
+  { target: 800, time: 60 },
+  { target: 1000, time: 60 },
+  { target: 1300, time: 55 },
+  { target: 1600, time: 55 },
+  { target: 1900, time: 55 },
+  { target: 2300, time: 50 },
+  { target: 2700, time: 50 },
+  { target: 3200, time: 50 },
+  { target: 3700, time: 45 },
+  { target: 4300, time: 45 },
+  { target: 5000, time: 45 },
   { target: 5700, time: 40 },
-  { target: 6300, time: 40 },
-  { target: 7000, time: 38 },
-  { target: 7700, time: 38 },
+  { target: 6500, time: 40 },
+  { target: 7400, time: 40 },
   { target: 8400, time: 38 },
-  { target: 9200, time: 35 },
-  { target: 10000, time: 35 },
-  { target: 10800, time: 35 },
-  { target: 11700, time: 32 },
-  { target: 12600, time: 32 },
-  { target: 13500, time: 32 },
-  { target: 14500, time: 30 },
-  { target: 15500, time: 30 },
-  { target: 16500, time: 28 },
-  { target: 18000, time: 28 },
-  { target: 19500, time: 25 },
-  { target: 22000, time: 25 },
+  { target: 9500, time: 38 },
+  { target: 10700, time: 38 },
+  { target: 12000, time: 35 },
+  { target: 13400, time: 35 },
+  { target: 15000, time: 35 },
+  { target: 16700, time: 32 },
+  { target: 18500, time: 32 },
+  { target: 20500, time: 32 },
+  { target: 22700, time: 30 },
+  { target: 25000, time: 30 },
+  { target: 27500, time: 28 },
+  { target: 30200, time: 28 },
+  { target: 33000, time: 25 },
+  { target: 36000, time: 25 },
+  { target: 40000, time: 25 },
+  { target: 45000, time: 25 },
+  { target: 50000, time: 25 },
+  { target: 55000, time: 25 },
+  { target: 60000, time: 25 },
+  { target: 65000, time: 25 },
 ];
 
 function initGame() {
@@ -255,7 +395,7 @@ function startTimer() {
 }
 
 function createBoard() {
-  const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+  const gemTypesForLevel = Math.min(5 + Math.floor((level - 1) / 5), TOTAL_GEMS);
   
   board = [];
   for (let row = 0; row < GRID_ROWS; row++) {
@@ -314,22 +454,32 @@ function handleTap(x, y) {
   if (state === 'menu') {
     const btnImg = imageCache['images/Button_002.png'];
     const btnScale = 1;
-    const btnY = gameHeight * 0.3 + 30;
+    const startBtnY = gameHeight * 0.3 + 30;
+    
+    const startBtnAnim = buttonAnimations.find(a => a.index === 'start');
+    const startScale = startBtnAnim ? 1 + Math.sin(startBtnAnim.progress * Math.PI) * 0.15 : 1;
+    if (startBtnAnim) {
+      startBtnAnim.progress -= 0.08;
+      if (startBtnAnim.progress <= 0) {
+        buttonAnimations = buttonAnimations.filter(a => a.index !== 'start');
+      }
+    }
     
     if (btnImg && btnImg.width > 0) {
-      const btnWidth = btnImg.width * btnScale;
-      const btnHeight = btnImg.height * btnScale;
+      const btnWidth = btnImg.width * btnScale * startScale;
+      const btnHeight = btnImg.height * btnScale * startScale;
       
-      const startBtnX = gameWidth / 2 - 80 - btnWidth / 2;
-      if (x >= startBtnX && x <= startBtnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+      const startBtnX = gameWidth / 2 - btnWidth / 2 - 80;
+      if (x >= startBtnX && x <= startBtnX + btnWidth && y >= startBtnY && y <= startBtnY + btnHeight) {
         buttonAnimations.push({ index: 'start', progress: 1 });
+        levelHueRotation = 0;
         state = 'playing';
         initGame();
         return;
       }
       
       const bookBtnX = gameWidth / 2 + 80 - btnWidth / 2;
-      if (x >= bookBtnX && x <= bookBtnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
+      if (x >= bookBtnX && x <= bookBtnX + btnWidth && y >= startBtnY && y <= startBtnY + btnHeight) {
         buttonAnimations.push({ index: 'book', progress: 1 });
         fromPlaying = false;
         state = 'collection';
@@ -426,6 +576,8 @@ function handleTap(x, y) {
     let btnY;
     if (state === 'gameComplete') {
       btnY = gameHeight * 0.85 - btnHeight / 2;
+    } else if (state === 'gameover') {
+      btnY = gameHeight * 0.80 - btnHeight / 2;
     } else {
       btnY = gameHeight * 0.65 - btnHeight / 2;
     }
@@ -433,14 +585,21 @@ function handleTap(x, y) {
     if (x >= btnX && x <= btnX + btnWidth && y >= btnY && y <= btnY + btnHeight) {
       if (state === 'gameover') {
         level = 1;
+        levelHueRotation = 0;
         score = 0;
       } else if (state === 'gameComplete') {
         level = 1;
+        levelHueRotation = 0;
         score = 0;
         totalTime = 0;
       }
-      state = 'playing';
-      initGame();
+      if (state === 'levelComplete') {
+        state = 'playing';
+        initGame();
+      } else {
+        state = 'menu';
+      }
+      return;
     }
     return;
   }
@@ -479,42 +638,77 @@ function handleTap(x, y) {
 function swapTiles(t1, t2) {
   isAnimating = true;
   
-  const temp = board[t1.row][t1.col];
-  board[t1.row][t1.col] = board[t2.row][t2.col];
-  board[t2.row][t2.col] = temp;
+  const tile1 = board[t1.row][t1.col];
+  const tile2 = board[t2.row][t2.col];
   
-  board[t1.row][t1.col].row = t1.row;
-  board[t1.row][t1.col].col = t1.col;
-  board[t1.row][t1.col].targetX = t1.col * tileSize;
-  board[t1.row][t1.col].targetY = t1.row * tileSize;
+  const t1Row = t1.row;
+  const t1Col = t1.col;
+  const t2Row = t2.row;
+  const t2Col = t2.col;
   
-  board[t2.row][t2.col].row = t2.row;
-  board[t2.row][t2.col].col = t2.col;
-  board[t2.row][t2.col].targetX = t2.col * tileSize;
-  board[t2.row][t2.col].targetY = t2.row * tileSize;
+  board[t1Row][t1Col] = tile2;
+  board[t2Row][t2Col] = tile1;
   
-  setTimeout(() => {
-    const matches = findAllMatches();
-    if (matches.length > 0) {
-      processMatches(matches);
-    } else {
-      const temp = board[t1.row][t1.col];
-      board[t1.row][t1.col] = board[t2.row][t2.col];
-      board[t2.row][t2.col] = temp;
-      
-      board[t1.row][t1.col].row = t1.row;
-      board[t1.row][t1.col].col = t1.col;
-      board[t1.row][t1.col].targetX = t1.col * tileSize;
-      board[t1.row][t1.col].targetY = t1.row * tileSize;
-      
-      board[t2.row][t2.col].row = t2.row;
-      board[t2.row][t2.col].col = t2.col;
-      board[t2.row][t2.col].targetX = t2.col * tileSize;
-      board[t2.row][t2.col].targetY = t2.row * tileSize;
-      
-      setTimeout(() => { isAnimating = false; }, 200);
+  tile2.row = t1Row;
+  tile2.col = t1Col;
+  tile2.targetX = t1Col * tileSize;
+  tile2.targetY = t1Row * tileSize;
+  
+  tile1.row = t2Row;
+  tile1.col = t2Col;
+  tile1.targetX = t2Col * tileSize;
+  tile1.targetY = t2Row * tileSize;
+  
+  gsap.to(tile2, {
+    x: tile2.targetX,
+    y: tile2.targetY,
+    duration: 0.25,
+    ease: 'power2out'
+  });
+  
+  gsap.to(tile1, {
+    x: tile1.targetX,
+    y: tile1.targetY,
+    duration: 0.25,
+    ease: 'power2out',
+    onComplete: () => {
+      const matches = findAllMatches();
+      if (matches.length > 0) {
+        processMatches(matches);
+      } else {
+        const currentTile1 = board[t1Row][t1Col];
+        const currentTile2 = board[t2Row][t2Col];
+        
+        board[t1Row][t1Col] = currentTile2;
+        board[t2Row][t2Col] = currentTile1;
+        
+        currentTile2.row = t1Row;
+        currentTile2.col = t1Col;
+        currentTile2.targetX = t1Col * tileSize;
+        currentTile2.targetY = t1Row * tileSize;
+        
+        currentTile1.row = t2Row;
+        currentTile1.col = t2Col;
+        currentTile1.targetX = t2Col * tileSize;
+        currentTile1.targetY = t2Row * tileSize;
+        
+        gsap.to(currentTile2, {
+          x: currentTile2.targetX,
+          y: currentTile2.targetY,
+          duration: 0.2,
+          ease: 'power2out'
+        });
+        
+        gsap.to(currentTile1, {
+          x: currentTile1.targetX,
+          y: currentTile1.targetY,
+          duration: 0.2,
+          ease: 'power2out',
+          onComplete: () => { isAnimating = false; }
+        });
+      }
     }
-  }, 250);
+  });
 }
 
 function findAllMatches() {
@@ -615,31 +809,32 @@ function determineMatchType(hMatch, vMatch) {
 }
 
 function processMatches(matches) {
-  let points = 0;
-  matches.forEach(m => {
-    const tile = board[m.row][m.col];
-    points += 10;
-    
-    if (tile.type >= 0 && tile.type < gemCollection.length) {
-      gemCollection[tile.type].collected = true;
-      try {
-        wx.setStorageSync('sushi_gemCollection', gemCollection);
-      } catch (e) {}
-    }
-    
-    tile.matched = true;
-    tile.matchAnimTime = 300;
-    playBubblePop();
-  });
-  
-  const hasSpecialMatch = matches.some(m => board[m.row][m.col] && (board[m.row][m.col].type === 0 || board[m.row][m.col].type === 1 || board[m.row][m.col].type === 2 || board[m.row][m.col].type === 3));
+  const hasSpecialMatch = matches.some(m => board[m.row][m.col] && board[m.row][m.col].special !== SPECIAL_NONE);
   
   if (hasSpecialMatch) {
+    let points = 0;
+    matches.forEach(m => {
+      const tile = board[m.row][m.col];
+      if (!tile) return;
+      
+      points += 10;
+      
+      if (tile.type >= 0 && tile.type < gemCollection.length) {
+        gemCollection[tile.type].collected = true;
+        try {
+          wx.setStorageSync('sushi_gemCollection', gemCollection);
+        } catch (e) {}
+      }
+      
+      tile.matched = true;
+      tile.scale = 1;
+      playBubblePop();
+    });
+    
     setTimeout(() => {
       matches.forEach(m => {
         const tile = board[m.row][m.col];
         if (tile) {
-          tile.matchAnimTime = 0;
           tile.scale = 1;
           tile.type = -1;
         }
@@ -655,32 +850,72 @@ function processMatches(matches) {
       setTimeout(() => {
         dropTiles();
       }, 200);
+      
+      isAnimating = false;
     }, 500);
     return;
   }
   
+  let points = 0;
+  const matchedTiles = [];
+
   matches.forEach(m => {
     const tile = board[m.row][m.col];
-    if (tile) {
-      tile.matchAnimTime = 0;
-      tile.scale = 1;
-      tile.type = -1;
+    if (!tile) return;
+
+    points += 10;
+    matchedTiles.push(tile);
+
+    if (tile.type >= 0 && tile.type < gemCollection.length) {
+      gemCollection[tile.type].collected = true;
+      try {
+        wx.setStorageSync('sushi_gemCollection', gemCollection);
+      } catch (e) {}
     }
+
+    tile.matched = true;
+    tile.scale = 1;
+    playBubblePop();
   });
-  
-  score += points;
-  
-  if (score >= targetScore && state === 'playing') {
-    setTimeout(() => { levelComplete(); }, 500);
-    return;
-  }
-  
+
   setTimeout(() => {
-    dropTiles();
-  }, 300);
+    matchedTiles.forEach(t => {
+      if (t) t.scale = 1.3;
+    });
+
+    setTimeout(() => {
+      matchedTiles.forEach(t => {
+        if (t) t.scale = 0;
+      });
+
+      setTimeout(() => {
+        matchedTiles.forEach(t => {
+          if (t) {
+            t.scale = 1;
+            t.type = -1;
+          }
+        });
+
+        score += points;
+
+        if (score >= targetScore && state === 'playing') {
+          setTimeout(() => { levelComplete(); }, 500);
+          return;
+        }
+
+        setTimeout(() => {
+          dropTiles();
+        }, 200);
+
+        isAnimating = false;
+      }, 150);
+    }, 150);
+  }, 100);
 }
 
 function dropTiles() {
+  let pendingTiles = 0;
+  
   for (let col = 0; col < GRID_COLS; col++) {
     let emptyRow = GRID_ROWS - 1;
     
@@ -697,21 +932,37 @@ function dropTiles() {
     }
     
     for (let row = emptyRow; row >= 0; row--) {
-      const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+      const gemTypesForLevel = Math.min(5 + Math.floor((level - 1) / 5), TOTAL_GEMS);
       board[row][col] = createTile(row, col, Math.floor(Math.random() * gemTypesForLevel), SPECIAL_NONE);
       board[row][col].y = (row - emptyRow - 1) * tileSize - tileSize;
       board[row][col].targetY = row * tileSize;
     }
   }
   
-  setTimeout(() => {
-    const matches = findAllMatches();
-    if (matches.length > 0) {
-      processMatches(matches);
-    } else {
-      isAnimating = false;
+  for (let col = 0; col < GRID_COLS; col++) {
+    for (let row = 0; row < GRID_ROWS; row++) {
+      if (!board[row][col]) continue;
+      const tile = board[row][col];
+      pendingTiles++;
+      
+      gsap.to(tile, {
+        y: tile.targetY,
+        duration: 0.4,
+        ease: 'bounceout',
+        onComplete: () => {
+          pendingTiles--;
+          if (pendingTiles <= 0) {
+            const matches = findAllMatches();
+            if (matches.length > 0) {
+              processMatches(matches);
+            } else {
+              isAnimating = false;
+            }
+          }
+        }
+      });
     }
-  }, 400);
+  }
 }
 
 function levelComplete() {
@@ -727,11 +978,13 @@ function levelComplete() {
   } else {
     state = 'levelComplete';
     level++;
+    levelHueRotation = Math.random() * 360;
   }
 }
 
 function gameOver() {
   state = 'gameover';
+  saveLevelScore(level, totalTime);
   if (gameInterval) clearInterval(gameInterval);
 }
 
@@ -746,6 +999,8 @@ function update(dt) {
     return a.time > 0;
   });
   
+  gsap.update();
+  
   if (selectedAnimation) {
     selectedAnimation.time += dt;
     if (selectedAnimation.time >= selectedAnimation.duration) {
@@ -757,24 +1012,6 @@ function update(dt) {
     hintAnimation.time += dt;
     if (hintAnimation.time >= hintAnimation.duration) {
       hintAnimation = null;
-    }
-  }
-  
-  if (!board || board.length === 0) return;
-  
-  for (let row = 0; row < GRID_ROWS; row++) {
-    if (!board[row]) continue;
-    for (let col = 0; col < GRID_COLS; col++) {
-      if (!board[row][col]) continue;
-      const tile = board[row][col];
-      tile.x += (tile.targetX - tile.x) * 0.15;
-      tile.y += (tile.targetY - tile.y) * 0.15;
-      
-      if (tile.matchAnimTime > 0) {
-        tile.matchAnimTime -= dt;
-        const progress = 1 - (tile.matchAnimTime / 300);
-        tile.scale = 1 + Math.sin(progress * Math.PI) * 0.3;
-      }
     }
   }
 }
@@ -803,7 +1040,14 @@ function render() {
   
   const bgImg = imageCache['images/bg.jpg'];
   if (bgImg && bgImg.width > 0) {
-    ctx.drawImage(bgImg, 0, 0, gameWidth, gameHeight);
+    if (level >= 2) {
+      ctx.save();
+      ctx.filter = `hue-rotate(${levelHueRotation}deg)`;
+      ctx.drawImage(bgImg, 0, 0, gameWidth, gameHeight);
+      ctx.restore();
+    } else {
+      ctx.drawImage(bgImg, 0, 0, gameWidth, gameHeight);
+    }
   } else {
     ctx.fillStyle = '#1a1a2e';
     ctx.fillRect(0, 0, gameWidth, gameHeight);
@@ -939,9 +1183,17 @@ function render() {
       
       let imgSrc;
       if (tile.matched || tile.selected) {
-        imgSrc = `images/shousi0${tile.type}_256.png`;
+        if (tile.type < 10) {
+          imgSrc = `images/shousi0${tile.type}_256.png`;
+        } else {
+          imgSrc = `images/shousi${tile.type}_256.png`;
+        }
       } else {
-        imgSrc = `images/shousi0${tile.type}_normal.png`;
+        if (tile.type < 10) {
+          imgSrc = `images/shousi0${tile.type}_normal.png`;
+        } else {
+          imgSrc = `images/shousi${tile.type}_normal.png`;
+        }
       }
       const img = imageCache[imgSrc];
       if (img && img.width > 0) {
@@ -989,14 +1241,40 @@ function render() {
     ctx.fillStyle = '#FF4444';
     ctx.font = 'bold 48px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('游戏结束!', gameWidth / 2, gameHeight * 0.35);
+    ctx.fillText('游戏结束!', gameWidth / 2, gameHeight * 0.20);
     
     ctx.fillStyle = '#FFFFFF';
     ctx.font = '28px Arial';
-    ctx.fillText('最终分数: ' + score, gameWidth / 2, gameHeight * 0.5);
+    ctx.fillText('最终分数: ' + score, gameWidth / 2, gameHeight * 0.32);
     
+    ctx.fillStyle = '#4ECDC4';
+    ctx.font = 'bold 32px Arial';
+    ctx.fillText('历史记录', gameWidth / 2, gameHeight * 0.44);
+    
+    const levelLeaderboard = getLevelLeaderboard();
+    ctx.fillStyle = '#FFFFFF';
     ctx.font = '22px Arial';
-    ctx.fillText('点击重新开始', gameWidth / 2, gameHeight * 0.65);
+    for (let i = 0; i < Math.min(5, levelLeaderboard.length); i++) {
+      const mins = Math.floor(levelLeaderboard[i].time / 60);
+      const secs = levelLeaderboard[i].time % 60;
+      ctx.fillText((i + 1) + '. 第' + levelLeaderboard[i].level + '关 - ' + mins + '分' + secs + '秒', gameWidth / 2, gameHeight * 0.52 + i * 30);
+    }
+    
+    const btnImg = imageCache['images/Button_002.png'];
+    if (btnImg && btnImg.width > 0) {
+      const btnWidth = btnImg.width;
+      const btnHeight = btnImg.height;
+      const btnX = gameWidth / 2 - btnWidth / 2;
+      const btnY = gameHeight * 0.80 - btnHeight / 2;
+      ctx.drawImage(btnImg, btnX, btnY, btnWidth, btnHeight);
+      ctx.font = '20px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.fillText('返回主菜单', gameWidth / 2, btnY + btnHeight / 2 + 7);
+    } else {
+      ctx.font = '22px Arial';
+      ctx.fillText('点击返回主菜单', gameWidth / 2, gameHeight * 0.80);
+    }
   }
   
   if (state === 'levelComplete') {
@@ -1281,17 +1559,6 @@ function renderCollection() {
         }
       }
       
-      const planteImg = imageCache['images/plante.png'];
-      if (planteImg && planteImg.width > 0) {
-        const planteSize = drawSize * 0.6 * 2;
-        const planteY = y + drawSize / 2 - planteSize / 2 - 20;
-        ctx.save();
-        ctx.filter = `hue-rotate(${gemHues[i]}deg)`;
-        ctx.globalAlpha = 0.8;
-        ctx.drawImage(planteImg, x - planteSize / 2, planteY, planteSize, planteSize);
-        ctx.restore();
-      }
-      
       if (img && img.width > 0) {
         ctx.drawImage(img, x - drawSize / 2, y - drawSize / 2, drawSize, drawSize);
       } else {
@@ -1380,6 +1647,7 @@ offsetY = (gameHeight - tileSize * GRID_ROWS) / 2 + 20;
 
 preloadImages();
 loadLeaderboard();
+loadLevelLeaderboard();
 loadGemCollection();
 
 function findHint() {
@@ -1438,7 +1706,7 @@ function doHint() {
 function doShuffle() {
   if (isAnimating) return;
   
-  const gemTypesForLevel = Math.min(3 + Math.floor((level - 1) / 3), TOTAL_GEMS);
+  const gemTypesForLevel = Math.min(5 + Math.floor((level - 1) / 5), TOTAL_GEMS);
   
   for (let row = 0; row < GRID_ROWS; row++) {
     if (!board[row]) continue;
@@ -1502,7 +1770,74 @@ function handleButtonClick(btnId) {
 
 wx.onTouchStart((res) => {
   const touch = res.touches[0];
-  handleTap(touch.clientX, touch.clientY);
+  const x = touch.clientX;
+  const y = touch.clientY;
+  
+  if (state === 'loading') return;
+  
+  if (state === 'playing') {
+    lastInteractionTime = Date.now();
+    idleRotation = 0;
+  }
+  
+  if (state === 'playing' && !isAnimating) {
+    const tile = getTileAt(x, y);
+    if (tile) {
+      touchStartTile = tile;
+      touchStartPos = { x, y };
+    } else {
+      handleTap(x, y);
+    }
+  } else {
+    handleTap(x, y);
+  }
+});
+
+wx.onTouchMove((res) => {
+  if (!touchStartTile || !touchStartPos) return;
+  
+  const touch = res.touches[0];
+  const dx = touch.clientX - touchStartPos.x;
+  const dy = touch.clientY - touchStartPos.y;
+  
+  if (Math.abs(dx) > SWIPE_THRESHOLD || Math.abs(dy) > SWIPE_THRESHOLD) {
+    let targetTile = null;
+    
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (dx > 0 && touchStartTile.col < GRID_COLS - 1) {
+        targetTile = { row: touchStartTile.row, col: touchStartTile.col + 1 };
+      } else if (dx < 0 && touchStartTile.col > 0) {
+        targetTile = { row: touchStartTile.row, col: touchStartTile.col - 1 };
+      }
+    } else {
+      if (dy > 0 && touchStartTile.row < GRID_ROWS - 1) {
+        targetTile = { row: touchStartTile.row + 1, col: touchStartTile.col };
+      } else if (dy < 0 && touchStartTile.row > 0) {
+        targetTile = { row: touchStartTile.row - 1, col: touchStartTile.col };
+      }
+    }
+    
+    if (targetTile) {
+      swapTiles(touchStartTile, targetTile);
+      touchStartTile = null;
+      touchStartPos = null;
+    }
+  }
+});
+
+wx.onTouchEnd((res) => {
+  if (touchStartTile && touchStartPos) {
+    const touch = res.changedTouches[0];
+    const dx = touch.clientX - touchStartPos.x;
+    const dy = touch.clientY - touchStartPos.y;
+    
+    if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) {
+      handleTap(touch.clientX, touch.clientY);
+    }
+  }
+  
+  touchStartTile = null;
+  touchStartPos = null;
 });
 
 gameLoop(0);
